@@ -1,11 +1,7 @@
 import time
 from google.adk.tools.tool_context import ToolContext
 
-# ==========================================
-# 🗄️ THE CLOSED-LOOP DATABASE (Mock BigQuery)
-# ==========================================
-# In a real GCP deployment, these functions would use the google-cloud-bigquery library.
-# For the hackathon demo, this shared dictionary acts as your live database.
+
 HACKATHON_DB = {
     "722530": {"status": "ANOMALY", "wind_speed_mph": 45.0, "baseline": 15.0},
     "724940": {"status": "NORMAL", "wind_speed_mph": 12.0, "baseline": 12.0}
