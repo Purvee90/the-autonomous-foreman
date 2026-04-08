@@ -1,143 +1,95 @@
 import os
-import logging
-import google.cloud.logging
 from dotenv import load_dotenv
 
+# ==========================================
+# 🛑 THE VERTEX AI MASTER SWITCH
+# Must run BEFORE any google.adk imports!
+# ==========================================
+load_dotenv() # Load the .env file
+os.environ.pop("GEMINI_API_KEY", None) # Bleach old keys
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+os.environ["GOOGLE_CLOUD_PROJECT"] = "the-autonomous-foreman"
+os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
+# ==========================================
+
+import google.cloud.logging
 from google.adk.agents import Agent, SequentialAgent
-from google.adk.tools.tool_context import ToolContext
+from .tools import (
+    analyze_telemetry_data,
+    route_technician,
+    evaluate_maintenance_window,
+    dispatch_alerts,
+    resolve_anomaly
+)
 
-from tools import get_calendar_mcp_toolset, get_bigquery_mcp_toolset
-
-# --- Setup ---
+# --- Setup Logging ---
 cloud_logging_client = google.cloud.logging.Client()
 cloud_logging_client.setup_logging()
-load_dotenv()
 
-model_name = os.getenv("MODEL", "gemini-2.0-flash")
+model_name = os.getenv("MODEL", "gemini-2.5-flash")
 
-
-calendar_toolset = get_calendar_mcp_toolset()
-bigquery_toolset = get_bigquery_mcp_toolset()
-
-
-
-def analyze_telemetry_data(tool_context: ToolContext, machine_id: str) -> dict:
-    """
-    Queries BigQuery for machine telemetry.
-    Compares real-time readings to historical baseline (Z-score logic).
-    Saves severity + anomaly details into shared ADK state.
-    """
-    # TODO: Replace stub with real BigQuery MCP call
-    # e.g., result = bigquery_toolset.run_query(f"SELECT ... WHERE machine_id='{machine_id}'")
-    severity = "High"  # Replace with calculated value from BQ result
-
-    # Persist findings so downstream agents can read them
-    tool_context.state["machine_id"] = machine_id
-    tool_context.state["severity"] = severity
-    tool_context.state["anomaly_details"] = "Vibration exceeded 3-sigma baseline."
-
-    return {"status": "success", "machine_id": machine_id, "severity": severity}
-
-
-def evaluate_maintenance_window(tool_context: ToolContext) -> dict:
-    """
-    Reads severity from state.
-    Queries Google Calendar MCP for technician availability and blackout windows.
-    Saves the maintenance decision + assigned tech into shared ADK state.
-    """
-    severity = tool_context.state.get("severity", "Low")
-
-    # TODO: Replace stub with real Calendar MCP call
-    # e.g., slots = calendar_toolset.list_events(...)
-    if severity == "High":
-        decision = "Immediate Override"
-        tech = "Jane Doe (On-Call)"
-    else:
-        decision = "Scheduled for next Tuesday at 2 AM"
-        tech = "Maintenance Pool"
-
-    tool_context.state["maintenance_decision"] = decision
-    tool_context.state["assigned_tech"] = tech
-
-    return {"status": "success", "decision": decision, "tech": tech}
-
-
-def dispatch_alerts(tool_context: ToolContext) -> dict:
-    """
-    Reads severity, decision, and tech from state.
-    Dispatches Slack/Jira alerts via MCP based on severity level.
-    """
-    severity = tool_context.state.get("severity", "Low")
-    decision = tool_context.state.get("maintenance_decision", "Unknown")
-    tech     = tool_context.state.get("assigned_tech", "Unknown")
-
-    # TODO: Replace stub with real Slack/Jira MCP call
-    # e.g., if severity == "High": slack_toolset.post_message(channel=tech, text=decision)
-
-    return {"status": "success", "action": f"Alerted {tech} via Slack for: {decision}"}
-
+# ==========================================
+# AGENT DEFINITIONS
+# ==========================================
 
 anomaly_agent = Agent(
-    name="Anomaly_Detection_Agent",
+    name="Watchdog_Agent",
     model=model_name,
-    description="Detects machine anomalies by querying telemetry data from BigQuery.",
-    instruction=(
-        "You are an industrial diagnostics AI. "
-        "When given a machine_id, call `analyze_telemetry_data` to pull telemetry, "
-        "calculate severity, and save the report to state. "
-        "Do not proceed without calling the tool."
-    ),
-    tools=[analyze_telemetry_data, bigquery_toolset],
+    description="Detects machine anomalies.",
+    instruction="Call `analyze_telemetry_data` to check the machine's BigQuery status.",
+    tools=[analyze_telemetry_data],
 )
 
-policy_agent = Agent(
-    name="Maintenance_Policy_Agent",
+router_agent = Agent(
+    name="Location_Router_Agent",
     model=model_name,
-    description="Resolves scheduling by cross-referencing severity with technician calendars.",
-    instruction=(
-        "You are a maintenance scheduling AI. "
-        "Read the 'severity' already saved in state. "
-        "Call `evaluate_maintenance_window` to check the calendar and save the decision. "
-        "Do not ask the user for input — use what is in state."
-    ),
-    tools=[evaluate_maintenance_window, calendar_toolset],
+    description="Finds the right technician.",
+    instruction="Call `route_technician` to assign a technician.",
+    tools=[route_technician],
 )
 
-alert_agent = Agent(
-    name="Alert_Strategy_Agent",
+scheduler_agent = Agent(
+    name="Maintenance_Scheduler_Agent",
     model=model_name,
-    description="Dispatches work tickets and notifications based on the maintenance decision.",
-    instruction=(
-        "You are an alert dispatcher. "
-        "Read severity, maintenance_decision, and assigned_tech from state. "
-        "Call `dispatch_alerts` to send Slack/Jira notifications. "
-        "Summarize what action was taken."
-    ),
+    description="Checks the calendar for scheduling.",
+    instruction="Call `evaluate_maintenance_window` to schedule the repair.",
+    tools=[evaluate_maintenance_window],
+)
+
+dispatcher_agent = Agent(
+    name="Alert_Dispatcher_Agent",
+    model=model_name,
+    description="Sends out the tickets.",
+    instruction="Call `dispatch_alerts` to notify the technician.",
     tools=[dispatch_alerts],
 )
 
+resolution_agent = Agent(
+    name="Resolution_Simulator_Agent",
+    model=model_name,
+    description="Simulates the repair.",
+    instruction="Call `resolve_anomaly` to update BigQuery and close the loop.",
+    tools=[resolve_anomaly],
+)
 
-# --- Sequential Coordinator ---
+# ==========================================
+# WORKFLOW
+# ==========================================
 
 primary_coordinator = SequentialAgent(
     name="Autonomous_Maintenance_Coordinator",
-    description="Runs the full predictive maintenance pipeline: detect → schedule → alert.",
-    sub_agents=[anomaly_agent, policy_agent, alert_agent],
+    description="Runs the full predictive maintenance pipeline.",
+    sub_agents=[anomaly_agent, router_agent, scheduler_agent, dispatcher_agent, resolution_agent],
 )
 
-
-# --- Root Agent (Entry Point) ---
-
 root_agent = Agent(
-    name="predictive_maintenance_root",
+    name="foreman_root",
     model=model_name,
-    description="Entry point for the Predictive Maintenance system.",
-    instruction=(
-        "You are the entry point for a predictive maintenance system. "
-        "When the user provides a machine_id or reports an issue, "
-        "delegate immediately to the Autonomous_Maintenance_Coordinator sub-agent "
-        "to run the full diagnostic and alert pipeline. "
-        "Do not attempt to answer questions yourself — always delegate."
-    ),
+    description="Entry point for the system.",
+    instruction="""
+    You are the Autonomous Foreman. 
+    When the user provides a machine_id or reports an issue, delegate immediately to the Autonomous_Maintenance_Coordinator.
+    If the user doesn't provide a machine ID, ask them for one.
+    """,
     sub_agents=[primary_coordinator],
 )
