@@ -1,12 +1,9 @@
 import os
 from dotenv import load_dotenv
 
-# ==========================================
-# 🛑 THE VERTEX AI MASTER SWITCH
-# Must run BEFORE any google.adk imports!
-# ==========================================
-load_dotenv() # Load the .env file
-os.environ.pop("GEMINI_API_KEY", None) # Bleach old keys
+
+load_dotenv() 
+os.environ.pop("GEMINI_API_KEY", None) 
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
 os.environ["GOOGLE_CLOUD_PROJECT"] = "the-autonomous-foreman"
 os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
@@ -72,9 +69,6 @@ resolution_agent = Agent(
     tools=[resolve_anomaly],
 )
 
-# ==========================================
-# WORKFLOW
-# ==========================================
 
 primary_coordinator = SequentialAgent(
     name="Autonomous_Maintenance_Coordinator",
