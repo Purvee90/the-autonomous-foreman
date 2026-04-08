@@ -1,2 +1,5 @@
 mcp
+fastmcp
 google-cloud-bigquery
+uvicorn
+sse-starlette
